@@ -1,0 +1,102 @@
+name: 'Atlas Volume Persistence'
+description: 'Restore or backup volumes from/to Git repository'
+author: 'Atlas Team'
+
+inputs:
+  operation:
+    description: 'Operation to perform: restore or backup'
+    required: true
+  volume_paths:
+    description: 'Volume paths in format /local/path:repo/path (can be multiple separated by space)'
+    required: true
+  enable:
+    description: 'Enable volume persistence (true/false)'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check if persistence is enabled
+      shell: bash
+      run: |
+        if [ "${{ inputs.enable }}" != "true" ]; then
+          echo "⏭️  Volume persistence disabled, skipping ${{ inputs.operation }}"
+          exit 0
+        fi
+
+    - name: Setup Git LFS
+      if: inputs.enable == 'true'
+      shell: bash
+      run: |
+        echo "📦 Installing Git LFS..."
+        curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
+        sudo apt-get install -y git-lfs
+        git lfs install
+
+    - name: Load volume persistence helper
+      if: inputs.enable == 'true'
+      shell: bash
+      run: |
+        if [ -f ".github/lib/volume-persistence.sh" ]; then
+          echo "✅ Loading volume persistence helper library"
+          source .github/lib/volume-persistence.sh
+        else
+          echo "⚠️  Volume persistence helper not found at .github/lib/volume-persistence.sh"
+          exit 1
+        fi
+
+    - name: Restore volumes from repository
+      if: inputs.enable == 'true' && inputs.operation == 'restore'
+      shell: bash
+      run: |
+        source .github/lib/volume-persistence.sh
+        echo "📥 Restoring volumes from repository..."
+        
+        # Parse volume_paths (format: /local/path:repo/path)
+        IFS=':' read -r volume_path repo_path <<< "${{ inputs.volume_paths }}"
+        
+        if [ -n "$volume_path" ] && [ -n "$repo_path" ]; then
+          atlas_restore_volume "$volume_path" "$repo_path"
+        else
+          echo "⚠️  Invalid volume_paths format: ${{ inputs.volume_paths }}"
+          exit 1
+        fi
+
+    - name: Backup volumes to repository
+      if: inputs.enable == 'true' && inputs.operation == 'backup'
+      shell: bash
+      run: |
+        source .github/lib/volume-persistence.sh
+        echo "📤 Backing up volumes to repository..."
+        
+        # Parse volume_paths (format: /local/path:repo/path)
+        IFS=':' read -r volume_path repo_path <<< "${{ inputs.volume_paths }}"
+        
+        if [ -n "$volume_path" ] && [ -n "$repo_path" ]; then
+          atlas_backup_volume "$volume_path" "$repo_path"
+        else
+          echo "⚠️  Invalid volume_paths format: ${{ inputs.volume_paths }}"
+          exit 1
+        fi
+        
+    - name: Commit and push volume changes
+      if: inputs.enable == 'true' && inputs.operation == 'backup'
+      shell: bash
+      run: |
+        source .github/lib/volume-persistence.sh
+        echo "💾 Committing volume changes..."
+        atlas_commit_volumes
+        
+    - name: Show volume statistics
+      if: inputs.enable == 'true' && inputs.operation == 'backup'
+      shell: bash
+      run: |
+        source .github/lib/volume-persistence.sh
+        
+        # Parse volume_paths to get volume_path
+        IFS=':' read -r volume_path repo_path <<< "${{ inputs.volume_paths }}"
+        
+        if [ -n "$volume_path" ] && [ -n "$repo_path" ]; then
+          atlas_volume_stats "$volume_path" "$repo_path"
+        fi

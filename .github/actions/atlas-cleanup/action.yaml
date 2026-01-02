@@ -1,0 +1,60 @@
+name: 'Atlas Cleanup'
+description: 'Pulisce risorse Atlas (WireGuard, Registry, peer)'
+inputs:
+  peer_id:
+    description: 'WireGuard peer ID to remove'
+    required: true
+  registry_url:
+    description: 'Atlas Registry URL'
+    required: true
+  registry_token:
+    description: 'Atlas Registry token'
+    required: true
+  gateway_ip:
+    description: 'Gateway IP address'
+    required: true
+  gateway_user:
+    description: 'Gateway SSH user'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Cleanup resources
+      shell: bash
+      if: always()
+      run: |
+        echo "🧹 Cleaning up..."
+        
+        # Stop heartbeat
+        [ -n "$HEARTBEAT_PID" ] && kill $HEARTBEAT_PID 2>/dev/null || true
+        
+        # Deregister
+        echo "📤 Deregistering from Atlas Registry..."
+        DEREG_BODY=$(mktemp)
+        http_code=$(curl -sS --max-time 10 --connect-timeout 5 \
+          -o "$DEREG_BODY" -w "%{http_code}" \
+          -X POST "${{ inputs.registry_url }}/deregister" \
+          -H "Authorization: Bearer ${{ inputs.registry_token }}" \
+          -H "Content-Type: application/json" ) || http_code="000"
+        if [ "$http_code" = "200" ]; then
+          echo "  ✓ Deregistered"
+        elif [ "$http_code" = "404" ]; then
+          echo "  ℹ️  Backend not found in registry (already expired?)"
+        else
+          echo "  ⚠️  Could not deregister (code $http_code), will rely on TTL"
+          cat "$DEREG_BODY"
+        fi
+        
+        # Stop WireGuard
+        echo "🔌 Stopping WireGuard..."
+        sudo wg-quick down wg0 2>/dev/null || true
+        
+        # Remove peer
+        if [ -n "${{ inputs.peer_id }}" ]; then
+          echo "🗑️  Removing peer: ${{ inputs.peer_id }}"
+          ssh -i ~/.ssh/atlas ${{ inputs.gateway_user }}@${{ inputs.gateway_ip }} \
+            "sudo /opt/atlas/scripts/peer_remove.sh ${{ inputs.peer_id }}" || true
+        fi
+        
+        echo "✅ Cleanup completed"

@@ -1,0 +1,121 @@
+name: 'Atlas VPN Setup'
+description: 'Configura WireGuard e connette il runner ad Atlas'
+inputs:
+  service_id:
+    description: 'Service ID'
+    required: true
+  peer_prefix:
+    description: 'Prefix for WireGuard peer'
+    required: false
+    default: 'runner'
+  gateway_ssh_key:
+    description: 'SSH key for gateway'
+    required: true
+  gateway_ip:
+    description: 'Gateway IP address'
+    required: true
+  gateway_user:
+    description: 'Gateway SSH user'
+    required: true
+  gateway_fqdn:
+    description: 'Gateway FQDN'
+    required: true
+outputs:
+  peer_id:
+    description: "WireGuard peer ID"
+    value: ${{ steps.create_peer.outputs.peer_id }}
+  backend_ip:
+    description: "Backend IP on WireGuard network"
+    value: ${{ steps.get_ip.outputs.backend_ip }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup SSH for gateway
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ inputs.gateway_ssh_key }}" > ~/.ssh/atlas
+        chmod 600 ~/.ssh/atlas
+        ssh-keyscan -H ${{ inputs.gateway_ip }} >> ~/.ssh/known_hosts
+    
+    - name: Create WireGuard peer on gateway
+      id: create_peer
+      shell: bash
+      run: |
+        PEER_ID="${{ inputs.peer_prefix }}-${{ inputs.service_id }}-${{ github.run_number }}"
+        echo "peer_id=$PEER_ID" >> $GITHUB_OUTPUT
+        
+        echo "🔐 Creating WireGuard peer: $PEER_ID"
+        
+        ssh -i ~/.ssh/atlas ${{ inputs.gateway_user }}@${{ inputs.gateway_ip }} \
+          "sudo /opt/atlas/scripts/peer_create.sh $PEER_ID ${{ inputs.gateway_fqdn }}"
+        
+        ssh -i ~/.ssh/atlas ${{ inputs.gateway_user }}@${{ inputs.gateway_ip }} \
+          "sudo cat /opt/atlas/peers/$PEER_ID/wg0.conf" > /tmp/wg0.conf
+        
+        echo "✅ WireGuard peer created"
+        cat /tmp/wg0.conf
+    
+    - name: Install WireGuard
+      shell: bash
+      run: |
+        echo "📦 Installing WireGuard..."
+        sudo apt update
+        sudo apt install -y wireguard resolvconf
+    
+    - name: Setup WireGuard interface
+      shell: bash
+      run: |
+        echo "🔧 Configuring WireGuard..."
+        sudo mkdir -p /etc/wireguard
+        sudo cp /tmp/wg0.conf /etc/wireguard/wg0.conf
+        sudo chmod 600 /etc/wireguard/wg0.conf
+        
+        echo "🚀 Starting WireGuard..."
+        sudo wg-quick down wg0 2>/dev/null || true
+        sudo wg-quick up wg0
+        
+        echo "✅ WireGuard interface status:"
+        sudo wg show
+        ip addr show wg0
+    
+    - name: Test VPN connectivity
+      shell: bash
+      run: |
+        echo "🔍 Testing connectivity to gateway..."
+        sleep 10
+        
+        sudo wg show wg0
+        ip route show | grep wg0
+        
+        attempt_ping() {
+          for i in $(seq "$1" "$2"); do
+            if ping -c 1 -W 2 10.50.0.1 > /dev/null 2>&1; then
+              echo "✅ VPN connection successful!"
+              ping -c 3 10.50.0.1
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying..."
+            sleep 3
+          done
+        }
+
+        attempt_ping 1 5
+        sleep 10
+        attempt_ping 6 10
+
+        sudo wg-quick down wg0 || true
+        sudo wg-quick up wg0
+        attempt_ping 11 15
+
+        echo "❌ VPN connection failed"
+        exit 1
+    
+    - name: Get backend IP
+      id: get_ip
+      shell: bash
+      run: |
+        BACKEND_IP=$(ip -4 addr show wg0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+        echo "backend_ip=$BACKEND_IP" >> $GITHUB_OUTPUT
+        echo "Backend IP: $BACKEND_IP"

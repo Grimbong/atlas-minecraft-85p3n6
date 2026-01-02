@@ -1,0 +1,42 @@
+name: Enable SSH on runner (password-based)
+description: "Optional: abilita SSH sul runner GitHub con utente 'runner' e password fornita"
+inputs:
+  enable_runner_ssh:
+    description: "Se true, abilita SSH"
+    required: true
+    default: "false"
+  runner_ssh_password:
+    description: "Password per l'utente runner"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: Enable SSH on runner (password-based)
+      shell: bash
+      if: ${{ inputs.enable_runner_ssh == 'true' }}
+      env:
+        RUNNER_PWD: ${{ inputs.runner_ssh_password }}
+      run: |
+        set -e
+        if [ -z "$RUNNER_PWD" ]; then
+          echo "❌ runner_ssh_password non impostata"
+          exit 1
+        fi
+        echo "🔐 Abilito SSH sul runner (utente: runner)..."
+        sudo apt-get update
+        sudo apt-get install -y openssh-server
+        sudo mkdir -p /run/sshd
+        sudo chmod 755 /run/sshd
+
+        if ! id runner >/dev/null 2>&1; then
+          sudo useradd -m -s /bin/bash runner
+        fi
+        echo "runner:${RUNNER_PWD}" | sudo chpasswd
+
+        sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/^#PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+
+        sudo systemctl restart ssh || sudo service ssh restart
+        echo "✅ SSH attivo. IP: $(hostname -I | awk '{print $1}') utente: runner"

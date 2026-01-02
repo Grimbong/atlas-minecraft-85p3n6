@@ -1,0 +1,230 @@
+name: 'Atlas Registry Integration'
+description: 'Registra il servizio con Atlas Registry e mantiene heartbeat'
+inputs:
+  service_id:
+    description: 'Service ID'
+    required: true
+  app_port:
+    description: 'Application port'
+    required: true
+  registry_url:
+    description: 'Atlas Registry URL'
+    required: true
+  registry_token:
+    description: 'Atlas Registry token'
+    required: true
+  duration_minutes:
+    description: 'Duration in minutes'
+    required: true
+  expose:
+    description: 'Expose strategy for main endpoint (host|port). Default host for http/https, port for tcp'
+    required: false
+    default: ''
+  public_port:
+    description: 'Public port when expose=port (default: same as app_port)'
+    required: false
+    default: ''
+  protocol:
+    description: 'Protocol for main endpoint (http|tcp)'
+    required: false
+    default: 'http'
+  additional_endpoints:
+    description: 'JSON array of extra endpoints (es. [{\"port\":9001,\"protocol\":\"tcp\",\"expose\":\"port\",\"public_port\":9001}])'
+    required: false
+    default: ''
+  enable_runner_ssh:
+    description: 'If true, expose SSH on port 22 via gateway (public port 2222)'
+    required: false
+    default: 'false'
+  endpoints_json:
+    description: 'Override: full JSON array of endpoints; if set, app_port/additional_endpoints are ignored'
+    required: false
+    default: ''
+  endpoints_json_b64:
+    description: 'Override: base64 of JSON array of endpoints (takes precedence over endpoints_json)'
+    required: false
+    default: ''
+  gateway_fqdn:
+    description: 'Gateway FQDN (es. nephemeral.xyz)'
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Register with Atlas Registry
+      shell: bash
+      run: |
+        echo "📝 Registering service with Atlas Registry..."
+        ENDPOINTS_FILE=$(mktemp)
+        cat > "$ENDPOINTS_FILE" <<'PYCODE'
+        import json, os, sys
+
+        service_id = os.environ["SERVICE_ID"]
+        port = int(os.environ["APP_PORT"])
+        protocol = os.environ.get("PROTOCOL", "http").lower()
+        expose = os.environ.get("EXPOSE", "").strip().lower()
+        public_port_raw = os.environ.get("PUBLIC_PORT", "").strip()
+        additional_raw = os.environ.get("ADDITIONAL_ENDPOINTS", "").strip()
+        endpoints_override = os.environ.get("ENDPOINTS_JSON", "").strip()
+        endpoints_override_b64 = os.environ.get("ENDPOINTS_JSON_B64", "").strip()
+        enable_runner_ssh = os.environ.get("ENABLE_RUNNER_SSH", "").strip().lower() in ("1", "true", "yes")
+
+        endpoints = None
+        if endpoints_override_b64:
+            import base64
+            try:
+                decoded = base64.b64decode(endpoints_override_b64).decode()
+                parsed = json.loads(decoded)
+                if isinstance(parsed, list):
+                    endpoints = parsed
+            except Exception as e:
+                print(f"ERROR: endpoints_json_b64 decode failed: {e}", file=sys.stderr)
+
+        # If endpoints_json provided, use it as-is
+        if endpoints is None and endpoints_override:
+            try:
+                parsed = json.loads(endpoints_override)
+                if isinstance(parsed, list):
+                    endpoints = parsed
+            except Exception:
+                print(f"ERROR: endpoints_json is not valid JSON: {endpoints_override}", file=sys.stderr)
+
+        if endpoints is None:
+            if not expose:
+                expose = "host" if protocol in ("http", "https") else "port"
+
+            endpoint = {"port": port, "protocol": protocol, "expose": expose}
+            if expose == "port":
+                try:
+                    endpoint["public_port"] = int(public_port_raw) if public_port_raw else port
+                except Exception:
+                    endpoint["public_port"] = port
+
+            endpoints = [endpoint]
+
+            if additional_raw:
+                try:
+                    extra = json.loads(additional_raw)
+                    if isinstance(extra, list):
+                        for ep in extra:
+                            try:
+                                p = int(ep.get("port"))
+                                proto = str(ep.get("protocol", "tcp")).lower()
+                                exp = str(ep.get("expose", "")).lower()
+                                if not exp:
+                                    exp = "host" if proto in ("http", "https") else "port"
+
+                                entry = {"port": p, "protocol": proto, "expose": exp}
+
+                                if exp == "port":
+                                    try:
+                                        entry["public_port"] = int(ep.get("public_port", p))
+                                    except Exception:
+                                        entry["public_port"] = p
+
+                                endpoints.append(entry)
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+
+        if enable_runner_ssh:
+            has_ssh = any(
+                ep.get("port") == 22 and str(ep.get("protocol", "tcp")).lower() == "tcp"
+                for ep in (endpoints or [])
+            )
+            if not has_ssh:
+                endpoints.append(
+                    {"port": 22, "protocol": "tcp", "expose": "port", "public_port": 2222}
+                )
+        for ep in endpoints or []:
+            if (
+                ep.get("port") == 22
+                and str(ep.get("protocol", "tcp")).lower() == "tcp"
+                and str(ep.get("expose", "")).lower() == "port"
+            ):
+                ep["public_port"] = 2222
+
+        print(json.dumps({"service_id": service_id, "endpoints": endpoints}))
+        PYCODE
+
+        SERVICE_ID="${{ inputs.service_id }}"
+        APP_PORT="${{ inputs.app_port }}"
+        PROTOCOL="${{ inputs.protocol }}"
+        EXPOSE="${{ inputs.expose }}"
+        PUBLIC_PORT="${{ inputs.public_port }}"
+        ADDITIONAL_ENDPOINTS="${{ inputs.additional_endpoints }}"
+        ENABLE_RUNNER_SSH="${{ inputs.enable_runner_ssh }}"
+        ENDPOINTS_JSON="${{ inputs.endpoints_json }}"
+        ENDPOINTS_JSON_B64="${{ inputs.endpoints_json_b64 }}"
+
+        payload=$(SERVICE_ID="$SERVICE_ID" APP_PORT="$APP_PORT" PROTOCOL="$PROTOCOL" EXPOSE="$EXPOSE" PUBLIC_PORT="$PUBLIC_PORT" ADDITIONAL_ENDPOINTS="$ADDITIONAL_ENDPOINTS" ENABLE_RUNNER_SSH="$ENABLE_RUNNER_SSH" ENDPOINTS_JSON="$ENDPOINTS_JSON" ENDPOINTS_JSON_B64="$ENDPOINTS_JSON_B64" python3 "$ENDPOINTS_FILE")
+        echo "Payload: $payload"
+
+        curl -v -X POST "${{ inputs.registry_url }}/register" \
+          -H "Authorization: Bearer ${{ inputs.registry_token }}" \
+          -H "Content-Type: application/json" \
+          -d "$payload"
+
+        echo "✅ Service registered successfully!"
+    
+    - name: Setup and start heartbeat
+      shell: bash
+      run: |
+        echo "💓 Setting up heartbeat..."
+        
+        cat > /tmp/heartbeat.sh << 'HEARTBEAT_EOF'
+        #!/bin/bash
+        set +e
+        REGISTRY_URL="${{ inputs.registry_url }}"
+        REGISTRY_TOKEN="${{ inputs.registry_token }}"
+        SERVICE_ID="${{ inputs.service_id }}"
+
+        echo "Heartbeat started at $(date)"
+        echo "Heartbeat URL: ${REGISTRY_URL}/heartbeat"
+
+        while true; do
+          if curl -sS -X POST "$REGISTRY_URL/heartbeat" \
+              -H "Authorization: Bearer $REGISTRY_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"service_id\":\"$SERVICE_ID\"}" \
+              -o /dev/null -w "%{http_code}" | grep -q "200"; then
+            echo "[$(date '+%H:%M:%S')] ❤️  Heartbeat OK"
+          else
+            echo "[$(date '+%H:%M:%S')] ⚠️  Heartbeat failed"
+          fi
+          sleep 20
+        done
+        HEARTBEAT_EOF
+
+        chmod +x /tmp/heartbeat.sh
+        nohup /tmp/heartbeat.sh > /tmp/heartbeat.log 2>&1 &
+        echo "HEARTBEAT_PID=$!" >> $GITHUB_ENV
+        
+        echo "✅ Heartbeat started"
+        sleep 2
+        tail /tmp/heartbeat.log
+    
+    - name: Keep service alive
+      shell: bash
+      run: |
+        DURATION=${{ inputs.duration_minutes }}
+        echo "⏰ Service will run for $DURATION minutes"
+        ENDPOINT_DESC="https://${{ inputs.service_id }}.${{ inputs.gateway_fqdn }}"
+        if [ "${{ inputs.expose }}" = "port" ]; then
+          PORT_DISPLAY="${{ inputs.public_port }}"
+          if [ -z "$PORT_DISPLAY" ]; then PORT_DISPLAY="${{ inputs.app_port }}"; fi
+          ENDPOINT_DESC="${{ inputs.service_id }}.${{ inputs.gateway_fqdn }}:${PORT_DISPLAY} (tcp)"
+        fi
+        echo "🌐 Service endpoint: $ENDPOINT_DESC"
+        
+        END_TIME=$(($(date +%s) + DURATION * 60))
+        
+        while [ $(date +%s) -lt $END_TIME ]; do
+          REMAINING=$(( (END_TIME - $(date +%s)) / 60 ))
+          echo "[$(date '+%H:%M:%S')] ⏳ Remaining: ${REMAINING}m"
+          tail -n 3 /tmp/heartbeat.log 2>/dev/null || true
+          sleep 60
+        done
+        
+        echo "⏰ Service uptime expired"

@@ -1,0 +1,240 @@
+name: 'Atlas Deploy - Generic Service Deployment'
+description: 'Deploy generico di un servizio su Atlas con VPN, Registry e Cleanup automatici'
+inputs:
+  # ========================================
+  # PARAMETRI SERVIZIO
+  # ========================================
+  service_id:
+    description: 'Service ID/hostname'
+    required: true
+  peer_prefix:
+    description: 'Prefix for WireGuard peer'
+    required: false
+    default: 'runner'
+  backend_duration_minutes:
+    description: 'Durata backend in minuti'
+    required: true
+    default: '120'
+  
+  # ========================================
+  # PARAMETRI ENDPOINTS
+  # ========================================
+  app_port:
+    description: 'Application port principale'
+    required: false
+    default: '8080'
+  protocol:
+    description: 'Protocol for main endpoint (http|tcp)'
+    required: false
+    default: 'http'
+  expose:
+    description: 'Expose strategy (host|port)'
+    required: false
+    default: ''
+  public_port:
+    description: 'Public port when expose=port'
+    required: false
+    default: ''
+  additional_endpoints:
+    description: 'JSON array of extra endpoints'
+    required: false
+    default: ''
+  endpoints_json_b64:
+    description: 'Base64 encoded JSON array of all endpoints (override)'
+    required: false
+    default: ''
+  
+  # ========================================
+  # PARAMETRI OPZIONALI
+  # ========================================
+  enable_runner_ssh:
+    description: 'Abilita SSH sul runner'
+    required: false
+    default: 'false'
+  runner_ssh_password:
+    description: 'Password SSH runner'
+    required: false
+    default: ''
+  
+  # ========================================
+  # PARAMETRI STEP CUSTOM
+  # ========================================
+  custom_steps_file:
+    description: 'Path relativo al file YAML con gli step custom del servizio (es. deploy.yaml)'
+    required: false
+    default: ''
+  
+  # ========================================
+  # SECRETS
+  # ========================================
+  gateway_ssh_key:
+    description: 'SSH key for gateway'
+    required: true
+  gateway_ip:
+    description: 'Gateway IP address'
+    required: true
+  gateway_user:
+    description: 'Gateway SSH user'
+    required: true
+  gateway_fqdn:
+    description: 'Gateway FQDN'
+    required: true
+  registry_url:
+    description: 'Atlas Registry URL'
+    required: true
+  registry_token:
+    description: 'Atlas Registry token'
+    required: true
+
+outputs:
+  peer_id:
+    description: "WireGuard peer ID"
+    value: ${{ steps.vpn.outputs.peer_id }}
+  backend_ip:
+    description: "Backend IP on WireGuard network"
+    value: ${{ steps.vpn.outputs.backend_ip }}
+
+runs:
+  using: "composite"
+  steps:
+    # ========================================
+    # STEP 1: SETUP VPN (with retry)
+    # ========================================
+    - name: Setup Atlas VPN (Attempt 1)
+      id: vpn_attempt_1
+      continue-on-error: true
+      uses: ./.github/actions/atlas-vpn-setup
+      with:
+        service_id: ${{ inputs.service_id }}
+        peer_prefix: ${{ inputs.peer_prefix }}
+        gateway_ssh_key: ${{ inputs.gateway_ssh_key }}
+        gateway_ip: ${{ inputs.gateway_ip }}
+        gateway_user: ${{ inputs.gateway_user }}
+        gateway_fqdn: ${{ inputs.gateway_fqdn }}
+    
+    - name: Setup Atlas VPN (Attempt 2)
+      id: vpn_attempt_2
+      if: steps.vpn_attempt_1.outcome == 'failure'
+      continue-on-error: true
+      uses: ./.github/actions/atlas-vpn-setup
+      with:
+        service_id: ${{ inputs.service_id }}
+        peer_prefix: ${{ inputs.peer_prefix }}
+        gateway_ssh_key: ${{ inputs.gateway_ssh_key }}
+        gateway_ip: ${{ inputs.gateway_ip }}
+        gateway_user: ${{ inputs.gateway_user }}
+        gateway_fqdn: ${{ inputs.gateway_fqdn }}
+    
+    - name: Check VPN setup success
+      shell: bash
+      run: |
+        if [ "${{ steps.vpn_attempt_1.outcome }}" == "success" ]; then
+          echo "✅ VPN setup successful on attempt 1"
+          exit 0
+        elif [ "${{ steps.vpn_attempt_2.outcome }}" == "success" ]; then
+          echo "✅ VPN setup successful on attempt 2"
+          exit 0
+        else
+          echo "❌ VPN setup failed after 2 attempts"
+          exit 1
+        fi
+    
+    - name: Set VPN outputs
+      id: vpn
+      shell: bash
+      run: |
+        if [ "${{ steps.vpn_attempt_1.outcome }}" == "success" ]; then
+          echo "peer_id=${{ steps.vpn_attempt_1.outputs.peer_id }}" >> $GITHUB_OUTPUT
+          echo "backend_ip=${{ steps.vpn_attempt_1.outputs.backend_ip }}" >> $GITHUB_OUTPUT
+        else
+          echo "peer_id=${{ steps.vpn_attempt_2.outputs.peer_id }}" >> $GITHUB_OUTPUT
+          echo "backend_ip=${{ steps.vpn_attempt_2.outputs.backend_ip }}" >> $GITHUB_OUTPUT
+        fi
+    
+    # ========================================
+    # STEP 2: ENSURE DOCKER
+    # ========================================
+    - name: Ensure Docker is running
+      shell: bash
+      run: |
+        echo "🐳 Ensuring Docker is available..."
+        sudo systemctl start docker || true
+        docker --version
+    
+    # ========================================
+    # STEP 3: ENABLE SSH (opzionale)
+    # ========================================
+    - name: Enable SSH on runner (optional)
+      if: inputs.enable_runner_ssh == 'true'
+      uses: ./.github/actions/enable-ssh-runner
+      with:
+        enable_runner_ssh: ${{ inputs.enable_runner_ssh }}
+        runner_ssh_password: ${{ inputs.runner_ssh_password }}
+    
+    # ========================================
+    # STEP 4: ESEGUI STEP CUSTOM DEL SERVIZIO
+    # ========================================
+    - name: Execute service-specific deployment steps
+      if: inputs.custom_steps_file != ''
+      shell: bash
+      env:
+        SERVICE_ID: ${{ inputs.service_id }}
+        BACKEND_IP: ${{ steps.vpn.outputs.backend_ip }}
+        GATEWAY_IP: ${{ inputs.gateway_ip }}
+        GATEWAY_FQDN: ${{ inputs.gateway_fqdn }}
+      run: |
+        echo "🚀 Executing service-specific steps from: ${{ inputs.custom_steps_file }}"
+        
+        # Verifica che il file esista
+        if [ ! -f "${{ inputs.custom_steps_file }}" ]; then
+          echo "❌ Custom steps file not found: ${{ inputs.custom_steps_file }}"
+          exit 1
+        fi
+        
+        # Esegui lo script custom
+        chmod +x "${{ inputs.custom_steps_file }}" 2>/dev/null || true
+        
+        # Se è uno script bash, eseguilo direttamente
+        if [[ "${{ inputs.custom_steps_file }}" == *.sh ]]; then
+          bash "${{ inputs.custom_steps_file }}"
+        # Se è un file Python, eseguilo con python
+        elif [[ "${{ inputs.custom_steps_file }}" == *.py ]]; then
+          python3 "${{ inputs.custom_steps_file }}"
+        # Altrimenti assumiamo sia uno script bash
+        else
+          bash "${{ inputs.custom_steps_file }}"
+        fi
+        
+        echo "✅ Service-specific steps completed"
+    
+    # ========================================
+    # STEP 5: REGISTRY + HEARTBEAT
+    # ========================================
+    - name: Register and maintain service
+      uses: ./.github/actions/atlas-registry
+      with:
+        service_id: ${{ inputs.service_id }}
+        app_port: ${{ inputs.app_port }}
+        protocol: ${{ inputs.protocol }}
+        expose: ${{ inputs.expose }}
+        public_port: ${{ inputs.public_port }}
+        additional_endpoints: ${{ inputs.additional_endpoints }}
+        endpoints_json_b64: ${{ inputs.endpoints_json_b64 }}
+        registry_url: ${{ inputs.registry_url }}
+        registry_token: ${{ inputs.registry_token }}
+        enable_runner_ssh: ${{ inputs.enable_runner_ssh }}
+        duration_minutes: ${{ inputs.backend_duration_minutes }}
+        gateway_fqdn: ${{ inputs.gateway_fqdn }}
+    
+    # ========================================
+    # STEP 6: CLEANUP (always)
+    # ========================================
+    - name: Cleanup Atlas resources
+      if: always()
+      uses: ./.github/actions/atlas-cleanup
+      with:
+        peer_id: ${{ steps.vpn.outputs.peer_id }}
+        registry_url: ${{ inputs.registry_url }}
+        registry_token: ${{ inputs.registry_token }}
+        gateway_ip: ${{ inputs.gateway_ip }}
+        gateway_user: ${{ inputs.gateway_user }}

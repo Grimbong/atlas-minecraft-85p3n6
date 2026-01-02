@@ -1,0 +1,56 @@
+# ========================================
+# Git LFS Configuration for Media/File Storage Services
+# ========================================
+# Use this template for services that store user uploads,
+# media files, documents (MinIO, file servers, CDN, etc.)
+
+# Images
+data/**/*.jpg filter=lfs diff=lfs merge=lfs -text
+data/**/*.jpeg filter=lfs diff=lfs merge=lfs -text
+data/**/*.png filter=lfs diff=lfs merge=lfs -text
+data/**/*.gif filter=lfs diff=lfs merge=lfs -text
+data/**/*.bmp filter=lfs diff=lfs merge=lfs -text
+data/**/*.tiff filter=lfs diff=lfs merge=lfs -text
+data/**/*.webp filter=lfs diff=lfs merge=lfs -text
+data/**/*.svg filter=lfs diff=lfs merge=lfs -text
+data/**/*.ico filter=lfs diff=lfs merge=lfs -text
+
+# Videos
+data/**/*.mp4 filter=lfs diff=lfs merge=lfs -text
+data/**/*.avi filter=lfs diff=lfs merge=lfs -text
+data/**/*.mov filter=lfs diff=lfs merge=lfs -text
+data/**/*.wmv filter=lfs diff=lfs merge=lfs -text
+data/**/*.flv filter=lfs diff=lfs merge=lfs -text
+data/**/*.webm filter=lfs diff=lfs merge=lfs -text
+data/**/*.mkv filter=lfs diff=lfs merge=lfs -text
+
+# Audio
+data/**/*.mp3 filter=lfs diff=lfs merge=lfs -text
+data/**/*.wav filter=lfs diff=lfs merge=lfs -text
+data/**/*.flac filter=lfs diff=lfs merge=lfs -text
+data/**/*.aac filter=lfs diff=lfs merge=lfs -text
+data/**/*.ogg filter=lfs diff=lfs merge=lfs -text
+data/**/*.m4a filter=lfs diff=lfs merge=lfs -text
+
+# Documents
+data/**/*.pdf filter=lfs diff=lfs merge=lfs -text
+data/**/*.doc filter=lfs diff=lfs merge=lfs -text
+data/**/*.docx filter=lfs diff=lfs merge=lfs -text
+data/**/*.xls filter=lfs diff=lfs merge=lfs -text
+data/**/*.xlsx filter=lfs diff=lfs merge=lfs -text
+data/**/*.ppt filter=lfs diff=lfs merge=lfs -text
+data/**/*.pptx filter=lfs diff=lfs merge=lfs -text
+
+# Archives
+data/**/*.zip filter=lfs diff=lfs merge=lfs -text
+data/**/*.rar filter=lfs diff=lfs merge=lfs -text
+data/**/*.7z filter=lfs diff=lfs merge=lfs -text
+data/**/*.tar filter=lfs diff=lfs merge=lfs -text
+data/**/*.tar.gz filter=lfs diff=lfs merge=lfs -text
+data/**/*.tar.bz2 filter=lfs diff=lfs merge=lfs -text
+
+# Other binary formats
+data/**/*.bin filter=lfs diff=lfs merge=lfs -text
+data/**/*.dat filter=lfs diff=lfs merge=lfs -text
+data/**/*.exe filter=lfs diff=lfs merge=lfs -text
+data/**/*.dll filter=lfs diff=lfs merge=lfs -text

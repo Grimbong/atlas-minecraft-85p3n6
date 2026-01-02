@@ -1,0 +1,93 @@
+#!/bin/bash
+# ========================================
+# Custom Service Deployment Script
+# ========================================
+# Questo è un template per deployare il tuo servizio custom su Atlas.
+#
+# NOTA: Il restore/backup dei volumi è gestito automaticamente dalla
+# action atlas-volume-persistence nel workflow. Questo script si
+# occupa solo del deploy effettivo del servizio.
+#
+# USAGE:
+#   1. Customizza le variabili per il tuo servizio
+#   2. Modifica la sezione "Deploy your service" con la tua logica
+#
+# ========================================
+
+set -e
+
+# ========================================
+# VARIABILI CONFIGURAZIONE
+# ========================================
+SERVICE_NAME="my-service"
+VOLUME_PATH="/tmp/my-service-data"
+
+echo "🚀 Starting custom service deployment..."
+
+# ========================================
+# PREPARAZIONE
+# ========================================
+echo "📁 Creating data directory..."
+sudo mkdir -p "$VOLUME_PATH"
+sudo docker rm -f "$SERVICE_NAME" 2>/dev/null || true
+
+# ========================================
+# DEPLOY YOUR SERVICE
+# ========================================
+# Qui metti la tua logica di deploy
+
+echo "📦 Deploying service..."
+
+# Esempio con Docker
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+docker run -d \
+  --name "$CONTAINER_NAME" \
+  -v "$VOLUME_PATH:/app/data" \
+  -p 8080:8080 \
+  my-custom-image:latest
+
+# Esempio: con Docker
+sudo docker run -d \
+  --name "$SERVICE_NAME" \
+  -v "$VOLUME_PATH:/app/data" \
+  -p 8080:8080 \
+  your-image:latest
+
+# Oppure con Docker Compose
+# docker compose up -d
+
+# Oppure con systemd
+# sudo systemctl restart my-service
+
+echo "✅ Service deployed"
+
+# ========================================
+# HEALTH CHECK
+# ========================================
+echo "⏳ Waiting for service to become ready..."
+
+for i in $(seq 1 20); do
+  if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+    echo "✅ Service is healthy!"
+    break
+  fi
+  echo "Attempt $i/20: not ready yet, retrying in 3s..."
+  sleep 3
+done
+
+echo "✅ Deployment completed successfully!"
+
+# ========================================
+# NOTE: PERSISTENZA VOLUMI
+# ========================================
+# Il restore e backup dei volumi sono gestiti automaticamente dalle
+# actions atlas-volume-persistence nel workflow.
+# 
+# Se hai bisogno di controlli custom, puoi usare le funzioni helper:
+#   source .github/lib/volume-persistence.sh
+#   atlas_volume_stats "$VOLUME_PATH"
+#   atlas_backup_volume "$VOLUME_PATH:data/my-service"
+#   atlas_commit_volumes "Manual backup"
+#
+# ========================================

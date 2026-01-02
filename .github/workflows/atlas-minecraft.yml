@@ -1,0 +1,229 @@
+name: Deploy Minecraft Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      service_id:
+        description: 'Service ID/hostname'
+        required: true
+        default: 'minecraft'
+      backend_duration_minutes:
+        description: 'Durata backend in minuti'
+        required: true
+        default: '120'
+        type: number
+      enable_runner_ssh:
+        description: 'Abilita SSH sul runner'
+        required: false
+        default: 'false'
+        type: boolean
+      runner_ssh_password:
+        description: 'Password SSH runner'
+        required: false
+        default: ''
+        type: string
+      public_port:
+        description: 'Porta pubblica Minecraft'
+        required: true
+        default: '25565'
+        type: string
+      enable_volume_persistence:
+        description: 'Enable volume persistence to repository'
+        required: false
+        default: 'true'
+        type: boolean
+      volume_path:
+        description: 'Local volume path'
+        required: false
+        default: '/tmp/minecraft-data'
+        type: string
+      repo_path:
+        description: 'Repository data path'
+        required: false
+        default: 'data/minecraft'
+        type: string
+      mc_version:
+        description: 'Minecraft version'
+        required: false
+        default: '1.21.4'
+        type: string
+      mc_java_heap:
+        description: 'Java heap memory (e.g., 2G, 4G, 6G)'
+        required: false
+        default: '6G'
+        type: string
+      worldgen_type:
+        description: 'World type (normal, flat, large_biomes, amplified)'
+        required: false
+        default: 'normal'
+        type: choice
+        options:
+          - normal
+          - flat
+          - large_biomes
+          - amplified
+      worldgen_seed:
+        description: 'World seed (leave empty for random)'
+        required: false
+        default: ''
+        type: string
+      worldgen_structures:
+        description: 'Generate structures (villages, temples, etc.)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      max_players:
+        description: 'Maximum players'
+        required: false
+        default: '20'
+        type: string
+      difficulty:
+        description: 'Difficulty'
+        required: false
+        default: 'normal'
+        type: choice
+        options:
+          - peaceful
+          - easy
+          - normal
+          - hard
+      gamemode:
+        description: 'Default gamemode'
+        required: false
+        default: 'survival'
+        type: choice
+        options:
+          - survival
+          - creative
+          - adventure
+          - spectator
+      pvp:
+        description: 'Enable PvP'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      view_distance:
+        description: 'View distance (chunks)'
+        required: false
+        default: '10'
+        type: string
+      env_vars_json:
+        description: 'Environment variables as JSON'
+        required: false
+        default: '{}'
+        type: string
+
+env:
+  SERVICE_ID: ${{ github.event.inputs.service_id }}
+  PUBLIC_PORT: ${{ github.event.inputs.public_port }}
+  MC_VERSION: ${{ github.event.inputs.mc_version }}
+  JAVA_HEAP: ${{ github.event.inputs.mc_java_heap }}
+  WORLDGEN_TYPE: ${{ github.event.inputs.worldgen_type }}
+  WORLDGEN_SEED: ${{ github.event.inputs.worldgen_seed }}
+  WORLDGEN_STRUCTURES: ${{ github.event.inputs.worldgen_structures }}
+  MAX_PLAYERS: ${{ github.event.inputs.max_players }}
+  DIFFICULTY: ${{ github.event.inputs.difficulty }}
+  GAMEMODE: ${{ github.event.inputs.gamemode }}
+  PVP: ${{ github.event.inputs.pvp }}
+  VIEW_DISTANCE: ${{ github.event.inputs.view_distance }}
+
+jobs:
+  deploy-minecraft:
+    name: Deploy Minecraft on Atlas
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Parse environment variables
+        id: parse_env
+        run: |
+          echo '${{ github.event.inputs.env_vars_json }}' > /tmp/env_vars.json
+          cat /tmp/env_vars.json
+          
+          python3 -c "
+          import json, os
+          with open('/tmp/env_vars.json') as f:
+              env_vars = json.load(f)
+          for key, value in env_vars.items():
+              with open(os.environ['GITHUB_ENV'], 'a') as env_file:
+                  env_file.write(f'{key}={value}\n')
+          "
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Fix git remote fowwwr push
+        run: |
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Restore volumes from repository
+        uses: ./.github/actions/atlas-volume-persistence
+        with:
+          operation: restore
+          enable: ${{ github.event.inputs.enable_volume_persistence }}
+          volume_paths: '${{ github.event.inputs.volume_path }}:${{ github.event.inputs.repo_path }}'
+
+      - name: Deploy Minecraft to Atlas
+        uses: ./.github/actions/atlas-deploy
+        with:
+          service_id: ${{ env.SERVICE_ID }}
+          peer_prefix: 'minecraft'
+          backend_duration_minutes: ${{ github.event.inputs.backend_duration_minutes }}
+          app_port: ${{ env.PUBLIC_PORT }}
+          protocol: 'tcp'
+          expose: 'port'
+          public_port: ${{ env.PUBLIC_PORT }}
+          enable_runner_ssh: ${{ github.event.inputs.enable_runner_ssh }}
+          runner_ssh_password: ${{ github.event.inputs.runner_ssh_password }}
+          custom_steps_file: '.github/deploy-scripts/minecraft/deploy.sh'
+          gateway_ssh_key: ${{ secrets.ATLAS_GATEWAY_SSH_KEY }}
+          gateway_ip: ${{ secrets.ATLAS_GATEWAY_IP }}
+          gateway_user: ${{ secrets.ATLAS_GATEWAY_USER }}
+          gateway_fqdn: ${{ secrets.ATLAS_GATEWAY_FQDN }}
+          registry_url: ${{ secrets.ATLAS_REGISTRY_URL }}
+          registry_token: ${{ secrets.ATLAS_REGISTRY_TOKEN }}
+
+      - name: Stop Minecraft server before backup
+        if: always()
+        run: |
+          MC_PID_FILE="${{ github.event.inputs.volume_path }}/minecraft.pid"
+          if [ -f "$MC_PID_FILE" ]; then
+            MC_PID=$(cat "$MC_PID_FILE")
+            if ps -p $MC_PID > /dev/null 2>&1; then
+              echo "🛑 Stopping Minecraft server (PID: $MC_PID)..."
+              kill $MC_PID 2>/dev/null || true
+              # Wait for graceful shutdown
+              sleep 10
+              # Force kill if still running
+              kill -9 $MC_PID 2>/dev/null || true
+              echo "✅ Minecraft server stopped"
+            else
+              echo "ℹ️  Minecraft server already stopped"
+            fi
+          else
+            echo "⚠️  PID file not found, server may have already stopped"
+          fi
+
+      - name: Backup volumes to repository
+        if: always()
+        uses: ./.github/actions/atlas-volume-persistence
+        with:
+          operation: backup
+          enable: ${{ github.event.inputs.enable_volume_persistence }}
+          volume_paths: '${{ github.event.inputs.volume_path }}:${{ github.event.inputs.repo_path }}'
